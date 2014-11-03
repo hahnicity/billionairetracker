@@ -33,6 +33,8 @@ def parse_html(htmls):
         indices = [index.text for index in rows[1].find_all("h4")]
         for row in rows:
             vals = [val.text for val in row.find_all("td")]
+            if re.search("Billionaire [Ll]ist \d{4}", vals[0]) or "Rank" in vals:
+                continue
             props = dict()
             for idx, val in enumerate(vals):
                 props[indices[idx]] = val
@@ -51,18 +53,30 @@ def parse_sp500_data(sp500_csv_reader):
 
 
 def visualize_data(billionaire_data, sp500_data):
-    billionaire_tuple = [(year, len(values)) for year, values in billionaire_data.items()]
+    us_billionaires = {}
+    for year in billionaire_data:
+        us_billionaires[year] = []
+        for billionaire in billionaire_data[year]:
+            if re.search("(USA|United States)", billionaire["Citizenship"]):
+                us_billionaires[year].append(billionaire)
+    billionaire_tuple = [(year, len(values)) for year, values in us_billionaires.items()]
     billionaire_tuple.sort(key=lambda tuple_: tuple_[0])
     years = map(lambda x: x[0], billionaire_tuple)
     number_billionaires = map(lambda x: x[1], billionaire_tuple)
     figure, ax1 = pyplot.subplots()
-    import pdb; pdb.set_trace()
-    ax1.plot(years, number_billionaires)
+    figure.set_size_inches(25, 10)
+    ax1.plot(years, number_billionaires, color="red", lw=5)
+    ax1.set_xlabel("Year")
+    ax1.set_ylabel("Number US billionaires")
     sp500_x = map(lambda x: x[0], sp500_data)
     sp500_y = map(lambda x: x[1], sp500_data)
-    ax1.plot(sp500_y)
-    ax1.xticks(range(len(sp500_x)), sp500_x)
-
+    ax2 = ax1.twiny().twinx()
+    ax2.plot(sp500_y, lw=10)
+    ax2.set_xticks(range(1, len(sp500_x) + 1))
+    ax2.set_xlim(right=len(sp500_x) - 1)
+    ax2.set_xticklabels([], visible=False)
+    ax2.set_xlabel("Date (Months)")
+    ax2.set_ylabel("SPY value")
     pyplot.show()
 
 
@@ -72,18 +86,20 @@ def main():
     stored_list = redis_client.get(billionaire_key)
     if not redis_client.get(billionaire_key):
         htmls = gather_billionaire_data()
-        billionaire_data = parse_html(htmls)
-        dumped_data = pickle.dumps(billionaire_data)
+        dumped_data = pickle.dumps(htmls)
         redis_client.set(billionaire_key, dumped_data)
     else:
-        billionaire_data = pickle.loads(stored_list)
+        htmls = pickle.loads(stored_list)
+    billionaire_data = parse_html(htmls)
     sp500_key = "billionaires_sp500_series"
-    csv_stringio = pickle.loads(redis_client.get(sp500_key))
-    if not csv_stringio:
-        req = requests.get("http://ichart.yahoo.com/table.csv?s=SPY&a=0&b=1&c=1996&d=9&e=1&f=2014&g=m")
+    sp500_raw_redis = redis_client.get(sp500_key)
+    if not sp500_raw_redis:
+        req = requests.get("http://ichart.yahoo.com/table.csv?s=SPY&a=2&b=1&c=1996&d=2&e=1&f=2014&g=m")
         csv_stringio = StringIO.StringIO(req.text)
         req.close()
         redis_client.set(sp500_key, pickle.dumps(csv_stringio))
+    else:
+        csv_stringio = pickle.loads(sp500_raw_redis)
     sp500_csv_reader = csv.reader(csv_stringio)
     sp500_data = parse_sp500_data(sp500_csv_reader)
     visualize_data(billionaire_data, sp500_data)
