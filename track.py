@@ -11,24 +11,65 @@ import requests
 
 URL = "http://stats.areppim.com/listes/list_billionairesx{}xwor.htm"
 
-def gather_billionaire_data():
-    htmls = []
+
+def gather_billionaire_data(years):
+    htmls = {}
     session = requests.Session()
-    years = ["{0:02d}".format(i) for i in range(15)] + ["96", "97", "98", "99"]
     for year in years:
-        request = session.get(URL.format(year))
-        htmls.append(request.text)
+        request = session.get(URL.format(year[-2:]))
+        htmls[year] = request.text
         request.close()
     session.close()
     return htmls
 
 
+def gather_sp500_data(years):
+    req = requests.get(
+        "http://ichart.yahoo.com/table.csv?s=SPY&a=2&b=1&c={}&d=2&e=1&f={}&g=m".
+        format(years[0], years[-1])
+    )
+    csv_stringio = StringIO.StringIO(req.text)
+    req.close()
+    return csv_stringio
+
+
+def load_billionaire_data(years, redis_client):
+    billionaire_base_key = "billionaires_list_{year}"
+    years_to_get = []
+    htmls = {}
+    for year in years:
+        stored_list = redis_client.get(billionaire_base_key.format(year=year))
+        if not stored_list:
+            years_to_get.append(year)
+        else:
+            htmls[year] = pickle.loads(stored_list)
+    new_htmls = gather_billionaire_data(years_to_get)
+    htmls.update(new_htmls)
+    for year in years_to_get:
+        redis_client.set(billionaire_base_key.format(year=year), pickle.dumps(htmls[year]))
+    # Add storage for parsed data too eventually
+    billionaire_data = parse_html(htmls)
+    return billionaire_data
+
+
+def load_sp500_data(years, redis_client):
+    sp500_key = "billionaires_sp500_{start}_to_{end}_series"
+    sp500_raw_redis = redis_client.get(sp500_key.format(start=years[0], end=years[-1]))
+    if not sp500_raw_redis:
+        csv_stringio = gather_sp500_data(years)
+        redis_client.set(sp500_key.format(start=years[0], end=years[-1]), pickle.dumps(csv_stringio))
+    else:
+        csv_stringio = pickle.loads(sp500_raw_redis)
+    sp500_csv_reader = csv.reader(csv_stringio)
+    sp500_data = parse_sp500_data(sp500_csv_reader)
+    return sp500_data
+
+
 def parse_html(htmls):
     parsed = dict()
-    for html in htmls:
+    for year, html in htmls.iteritems():
         soup = BeautifulSoup(html)
         rows = soup.find_all("tr")
-        year = re.search(r"(\d{4})", rows[0].text).groups()[0]
         parsed[year] = list()
         indices = [index.text for index in rows[1].find_all("h4")]
         for row in rows:
@@ -65,43 +106,29 @@ def visualize_data(billionaire_data, sp500_data):
     number_billionaires = map(lambda x: x[1], billionaire_tuple)
     figure, ax1 = pyplot.subplots()
     figure.set_size_inches(25, 10)
-    ax1.plot(years, number_billionaires, color="red", lw=5)
+    ax1.plot(years, number_billionaires, color="red", lw=5, label="US billionaires")
     ax1.set_xlabel("Year")
-    ax1.set_ylabel("Number US billionaires")
+    ax1.set_ylabel("Number")
+    ax1.set_xlim(left=int(years[0]))
+    ax1.legend()
     sp500_x = map(lambda x: x[0], sp500_data)
     sp500_y = map(lambda x: x[1], sp500_data)
     ax2 = ax1.twiny().twinx()
-    ax2.plot(sp500_y, lw=10)
+    ax2.plot(sp500_y, lw=10, label="SPY value")
     ax2.set_xticks(range(1, len(sp500_x) + 1))
     ax2.set_xlim(right=len(sp500_x) - 1)
     ax2.set_xticklabels([], visible=False)
     ax2.set_xlabel("Date (Months)")
-    ax2.set_ylabel("SPY value")
+    ax2.set_ylabel("value $")
+    ax2.legend(loc="center right")
     pyplot.show()
 
 
 def main():
+    years = [str(year) for year in range(2003, 2015)]  # Hardcoded for now
     redis_client = redis.StrictRedis()
-    billionaire_key = "billionaires_list"
-    stored_list = redis_client.get(billionaire_key)
-    if not redis_client.get(billionaire_key):
-        htmls = gather_billionaire_data()
-        dumped_data = pickle.dumps(htmls)
-        redis_client.set(billionaire_key, dumped_data)
-    else:
-        htmls = pickle.loads(stored_list)
-    billionaire_data = parse_html(htmls)
-    sp500_key = "billionaires_sp500_series"
-    sp500_raw_redis = redis_client.get(sp500_key)
-    if not sp500_raw_redis:
-        req = requests.get("http://ichart.yahoo.com/table.csv?s=SPY&a=2&b=1&c=1996&d=2&e=1&f=2014&g=m")
-        csv_stringio = StringIO.StringIO(req.text)
-        req.close()
-        redis_client.set(sp500_key, pickle.dumps(csv_stringio))
-    else:
-        csv_stringio = pickle.loads(sp500_raw_redis)
-    sp500_csv_reader = csv.reader(csv_stringio)
-    sp500_data = parse_sp500_data(sp500_csv_reader)
+    billionaire_data = load_billionaire_data(years, redis_client)
+    sp500_data = load_sp500_data(years, redis_client)
     visualize_data(billionaire_data, sp500_data)
 
 
