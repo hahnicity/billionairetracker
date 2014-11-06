@@ -110,7 +110,7 @@ def visualize_data(billionaire_data, sp500_data):
     ax1.set_xlabel("Year")
     ax1.set_ylabel("Number")
     ax1.set_xlim(left=int(years[0]))
-    ax1.legend()
+    ax1.legend(loc="upper right")
     sp500_x = map(lambda x: x[0], sp500_data)
     sp500_y = map(lambda x: x[1], sp500_data)
     ax2 = ax1.twiny().twinx()
